@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Power Analysis Demo — DRACO Lab</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  </head>
+  <body>
+    <main class="page">
+
+      <!-- ── SIMULATION BANNER (shown only in sim_app.py) ────────── -->
+      {% if sim_mode %}
+      <div class="sim-banner">
+        <div class="sim-banner-top">
+          <span class="sim-badge">SIMULATION MODE</span>
+          <span class="sim-banner-desc">
+            No hardware required &mdash; synthetic traces model the early-exit leakage.
+            Set <strong>Password Length</strong> to
+            <strong id="simPwLen">{{ demo_pw_len }}</strong> in Step&nbsp;6.
+          </span>
+        </div>
+        <div class="sim-pw-row">
+          <label class="sim-pw-label">
+            Demo password
+            <input id="simPwInput" type="text" maxlength="8"
+                   value="{{ demo_pw }}"
+                   placeholder="a–z and 0–9, max 8 chars"
+                   class="sim-pw-input" />
+          </label>
+          <button id="simPwBtn" class="btn btn-sim-pw">Set Password</button>
+          <span id="simPwStatus" class="sim-pw-status"></span>
+        </div>
+      </div>
+      {% endif %}
+
+      <!-- ── HERO ─────────────────────────────────────────────────── -->
+      <section class="hero panel">
+        <div class="hero-top">
+          <div class="hero-icon">&#x26A1;</div>
+          <div>
+            <div class="hero-lab">DRACO Lab &mdash; UCF</div>
+            <h1>Power Analysis for Password Bypass</h1>
+          </div>
+        </div>
+        <p class="hero-sub">
+          Live side-channel attack demo &middot;
+          <span class="gold">Dr. Mike Borowczak</span> &middot;
+          Design of Resilient Architectures for Computing
+        </p>
+
+        <div class="mission-briefing">
+          <div class="mission-row">
+            <span class="mission-label">THE IDEA</span>
+            <span>A correct vs. incorrect character causes a different code path, which draws different amounts of power &mdash; a measurable signal we can read from outside the chip.</span>
+          </div>
+          <div class="mission-row">
+            <span class="mission-label">THE ATTACK</span>
+            <span>Capture power traces for every candidate character. The outlier trace reveals the correct one. Repeat this one position at a time to recover the full password.</span>
+          </div>
+          <div class="mission-row">
+            <span class="mission-label">THE THREAT</span>
+            <span>Embedded systems, smart cards, IoT devices, secure enclaves &mdash; any hardware that checks secrets in software is potentially vulnerable.</span>
+          </div>
+        </div>
+
+        <div class="meta">
+          <span>SCOPE={{ scope_type }}</span>
+          <span>PLATFORM={{ platform }}</span>
+          <span>SS_VER={{ ss_ver }}</span>
+          <span>MAX_SAMPLES={{ max_samples }}</span>
+        </div>
+      </section>
+
+      <!-- ── CW ATTRIBUTION ────────────────────────────────────────── -->
+      <div class="attr-bar">
+        Based on
+        <a href="https://www.ChipWhisperer.io" target="_blank" rel="noopener">ChipWhisperer.io</a>
+        open-source training material &mdash; used under open-source license.
+      </div>
+
+      <!-- ── STEP 1: HARDWARE SETUP ────────────────────────────────── -->
+      <section class="panel">
+        <div class="step-badge">STEP 1</div>
+        <h2>&#x1F527; Hardware Setup</h2>
+
+        <div class="concept-block">
+          <p>
+            The <strong>ChipWhisperer scope</strong> is a USB oscilloscope specially designed for
+            power analysis. It clamps onto the target board&rsquo;s power rail via a shunt resistor
+            and records thousands of voltage samples per clock cycle.
+          </p>
+          <p>
+            The <strong>target firmware</strong> (<code>basic-passwdcheck</code>) implements a
+            character-by-character password comparison that returns immediately when a wrong
+            character is found &mdash; an <em>early-exit</em> or <em>short-circuit</em> comparison.
+            This is the vulnerability we exploit: more correct characters &rarr; more loop
+            iterations &rarr; measurably more power consumed.
+          </p>
+          <p>
+            This step connects to the scope over USB, compiles the firmware with
+            <code>make</code> for the correct platform, flashes the resulting
+            <code>.hex</code> via the scope&rsquo;s built-in programmer, and runs a sanity
+            capture to confirm {{ max_samples }} samples come back cleanly.
+          </p>
+        </div>
+
+        <button id="setupBtn" class="btn btn-warning">Initialize Hardware</button>
+        <p id="setupStatus" class="status"></p>
+        <pre id="setupLog" class="log"></pre>
+      </section>
+
+      <!-- ── STEP 2: COMPARE ───────────────────────────────────────── -->
+      <section class="panel">
+        <div class="step-badge">STEP 2</div>
+        <h2>&#x1F441; Compare: Correct vs. Incorrect</h2>
+
+        <div class="concept-block">
+          <p>
+            Before running a full attack we first <em>confirm the leakage exists</em>. We capture
+            one power trace for a character we know is correct at position 0, and one for a
+            character we know is wrong, then overlay them.
+          </p>
+          <p>
+            The two traces will look nearly identical at the start &mdash; the MCU receives our
+            byte and begins the comparison. Then they <strong>diverge</strong>. The correct
+            character causes the firmware to advance to the next comparison iteration, drawing
+            power for longer. The wrong character causes an immediate early exit, cutting the
+            trace short.
+          </p>
+        </div>
+
+        <div class="callout callout-cyan">
+          <span class="callout-icon">&#x1F50D;</span>
+          <div><strong>WATCH FOR:</strong> The traces track together, then <em>split apart</em>.
+          That divergence point is the branch instruction that separates a correct character from
+          a wrong one.</div>
+        </div>
+
+        <div class="row">
+          <label>Correct character
+            <input id="compareCorrect" type="text" value="h" maxlength="1" />
+          </label>
+          <label>Wrong character
+            <input id="compareWrong" type="text" value="0" maxlength="1" />
+          </label>
+          <button id="compareBtn" class="btn">Capture and Compare</button>
+        </div>
+        <p id="compareStatus" class="status"></p>
+        <div id="comparePlot" class="plot"></div>
+      </section>
+
+      <!-- ── STEP 3: SWEEP ─────────────────────────────────────────── -->
+      <section class="panel">
+        <div class="step-badge">STEP 3</div>
+        <h2>&#x1F50E; Sweep All Candidates</h2>
+
+        <div class="concept-block">
+          <p>
+            Now we do this systematically: capture one trace per candidate character
+            (<code>a&ndash;z</code>, <code>0&ndash;9</code>) and overlay all 36 at once.
+          </p>
+          <p>
+            <strong>Known prefix</strong> is the portion of the password already cracked. On
+            the first run it is empty (we are guessing position 0). After cracking character 1
+            you would enter it here so the firmware advances past it before hitting the unknown
+            position.
+          </p>
+          <p>
+            <strong>Samples to plot</strong> controls how much of each trace is rendered.
+            More samples show more of the execution; fewer samples zoom in on the early
+            divergence window and run faster.
+          </p>
+        </div>
+
+        <div class="callout callout-cyan">
+          <span class="callout-icon">&#x1F50D;</span>
+          <div><strong>WATCH FOR:</strong> 35 traces cluster tightly together. One trace breaks
+          away from the pack &mdash; that outlier is the correct character at the current
+          position.</div>
+        </div>
+
+        <div class="row">
+          <label>Known prefix
+            <input id="sweepPrefix" type="text" value="" placeholder="empty = position 0" />
+          </label>
+          <label>Samples to plot
+            <input id="sweepSamples" type="number" min="200" max="{{ max_samples }}" step="100" value="{{ default_samples }}" />
+          </label>
+          <button id="sweepBtn" class="btn">Run Sweep</button>
+        </div>
+        <p id="sweepStatus" class="status"></p>
+        <div id="sweepPlot" class="plot"></div>
+      </section>
+
+      <!-- ── STEP 4: DIFFERENCE TRACES ─────────────────────────────── -->
+      <section class="panel">
+        <div class="step-badge">STEP 4</div>
+        <h2>&#x1F4C9; Difference Traces</h2>
+
+        <div class="concept-block">
+          <p>
+            Overlaid raw traces can be noisy and hard to read. We sharpen the signal by
+            <em>subtracting a baseline</em> from every candidate trace.
+          </p>
+          <p>
+            The baseline is captured using <code>\x01</code> (ASCII 1, not a valid password
+            character), which guarantees the firmware rejects it at the very first comparison.
+            This gives us the <em>shortest possible execution path</em> as a reference &mdash;
+            zero correct characters, minimum power.
+          </p>
+          <p>
+            Subtracting this reference from each candidate trace cancels out noise that is common
+            to all traces (power supply ripple, clock harmonics, USB interference) and leaves only
+            the extra power drawn by extra comparison work. A spike in the difference trace at a
+            particular time offset is the firmware spending more cycles &mdash; pointing directly
+            at the correct character.
+          </p>
+        </div>
+
+        <div class="callout callout-cyan">
+          <span class="callout-icon">&#x1F4C9;</span>
+          <div><strong>WATCH FOR:</strong> Most difference traces stay flat near zero. The correct
+          character shows a prominent spike above the noise floor &mdash; that spike is the
+          firmware doing one extra comparison iteration.</div>
+        </div>
+
+        <div class="row">
+          <label>Password prefix
+            <input id="diffPrefix" type="text" value="h0p" />
+          </label>
+          <label>Samples to plot
+            <input id="diffSamples" type="number" min="200" max="{{ max_samples }}" step="100" value="{{ default_samples }}" />
+          </label>
+          <button id="diffBtn" class="btn">Compute Differences</button>
+        </div>
+        <p id="diffStatus" class="status"></p>
+        <div id="diffPlot" class="plot"></div>
+      </section>
+
+      <!-- ── STEP 5: QUANTIFY (SAD) ─────────────────────────────────── -->
+      <section class="panel">
+        <div class="step-badge">STEP 5</div>
+        <h2>&#x1F4CA; Quantify: SAD Scores</h2>
+
+        <div class="concept-block">
+          <p>
+            Reading the &ldquo;biggest spike&rdquo; off a plot by eye does not scale. We need a
+            number. We use <strong>SAD &mdash; Sum of Absolute Differences</strong>:
+          </p>
+          <pre class="formula">SAD(candidate) = &Sigma; | trace[i] &minus; reference[i] |   for all sample points i</pre>
+          <p>
+            A high SAD score means the candidate trace deviates a lot from the &ldquo;always
+            wrong&rdquo; reference. The character with the <em>highest</em> SAD score is the
+            best guess for the current position because it caused the most extra work inside
+            the firmware.
+          </p>
+        </div>
+
+        <div class="callout callout-gold">
+          <span class="callout-icon">&#x1F4A1;</span>
+          <div><strong>KEY INSIGHT:</strong> We take the <em>absolute value</em> before summing.
+          Without it, positive and negative differences could cancel each other out and wash away
+          the signal. Absolute value ensures we measure <em>total</em> deviation, not net
+          deviation.</div>
+        </div>
+
+        <div class="row">
+          <label>Password prefix
+            <input id="quantPrefix" type="text" value="h0p" />
+          </label>
+          <button id="quantBtn" class="btn">Score All Characters</button>
+        </div>
+        <p id="quantStatus" class="status"></p>
+        <p id="winner" class="winner"></p>
+        <div id="quantPlot" class="plot"></div>
+      </section>
+
+      <!-- ── STEP 6: FULL ATTACK ────────────────────────────────────── -->
+      <section class="panel">
+        <div class="step-badge">STEP 6</div>
+        <h2>&#x1F680; Full Automated Attack</h2>
+
+        <div class="concept-block">
+          <p>
+            Steps 2&ndash;5 are repeated automatically for every position in the password.
+            At each position the attack:
+          </p>
+          <ol class="attack-steps">
+            <li>Captures a <code>\x01</code> reference trace (firmware rejects at current depth).</li>
+            <li>Sweeps all 36 candidate characters, computing a SAD score for each.</li>
+            <li>Picks the highest-scoring character as the correct one and appends it to the
+            recovered prefix.</li>
+            <li>Moves to the next position with the updated prefix and repeats.</li>
+          </ol>
+          <p>
+            The total number of captures is <code>length &times; (36 + 1)</code> &mdash;
+            one reference plus 36 candidates per position. For a 5-character password that is
+            185 captures, compared to up to 36<sup>5</sup> = 60 million brute-force guesses.
+          </p>
+        </div>
+
+        <div class="callout callout-pink">
+          <span class="callout-icon">&#x23F1;</span>
+          <div><strong>LIVE:</strong> The password will appear one character at a time as each
+          position is cracked. Watch the SAD scores shift as the known prefix grows and the
+          firmware advances deeper into its comparison loop.</div>
+        </div>
+
+        <div class="row">
+          <label>Password length
+            <input id="attackLength" type="number" min="1" max="8" value="5" />
+          </label>
+          <button id="attackBtn" class="btn btn-danger">Launch Attack</button>
+        </div>
+        <p id="attackStatus" class="status"></p>
+        <h3 id="passwordOut" class="password"></h3>
+        <pre id="attackLog" class="log"></pre>
+      </section>
+
+      <!-- ── DISCUSSION ─────────────────────────────────────────────── -->
+      <section class="panel">
+        <h2>&#x1F4AC; Discussion</h2>
+
+        <div class="concept-block">
+          <p>
+            This demo targets a deliberately vulnerable firmware. Real-world embedded systems
+            often contain the same class of bug because developers write natural, readable code
+            without considering physical side channels.
+          </p>
+        </div>
+
+        <div class="qa-grid">
+          <div class="qa-item">
+            <div class="qa-q">What made this attack possible?</div>
+            <div class="qa-a">The firmware used an <strong>early-exit comparison</strong>: it
+            returns the moment a wrong character is found. This means each additional correct
+            character causes one more loop iteration, consuming measurably more power and
+            time. The side channel is the variation in execution length.</div>
+          </div>
+
+          <div class="qa-item">
+            <div class="qa-q">How would you defend against it?</div>
+            <div class="qa-a">Use a <strong>constant-time comparison</strong> that always
+            iterates through every character regardless of correctness, so execution length
+            does not depend on the secret. Additional countermeasures include power-rail noise
+            injection, randomized execution delays, and masking (randomizing intermediate
+            values).</div>
+          </div>
+
+          <div class="qa-item">
+            <div class="qa-q">What other systems check secrets character-by-character?</div>
+            <div class="qa-a">PIN pads, smart cards (EMV), secure boot verification, HMAC
+            comparison in TLS handshakes, API key validation in microcontrollers. Many
+            cryptographic libraries historically used <code>strcmp()</code> for secret
+            comparison &mdash; a classic constant-time bug.</div>
+          </div>
+
+          <div class="qa-item">
+            <div class="qa-q">Could you use this technique on AES?</div>
+            <div class="qa-a">Yes &mdash; this is called <strong>Differential Power Analysis
+            (DPA)</strong>, pioneered by Paul Kocher in 1998. Instead of comparing full traces,
+            DPA uses statistical correlation between power samples and a model of internal
+            computations (e.g., the S-box output). It can recover AES-128 keys with ~1000
+            traces.</div>
+          </div>
+
+          <div class="qa-item">
+            <div class="qa-q">Is this attack limited to password checks?</div>
+            <div class="qa-a">No. Any computation whose power consumption or timing correlates
+            with secret data is vulnerable. This includes RSA (via square-and-multiply),
+            elliptic curve scalar multiplication, and even cache-timing attacks on software
+            running on full CPUs (Spectre, Meltdown share the same conceptual root).</div>
+          </div>
+
+          <div class="qa-item">
+            <div class="qa-q">What does &ldquo;side channel&rdquo; mean exactly?</div>
+            <div class="qa-a">A side channel is any unintended information path that leaks
+            data about a computation &mdash; power consumption, execution time, electromagnetic
+            emission, acoustic noise, even cache access patterns. Side-channel attacks exploit
+            the physics of the implementation, not a flaw in the algorithm itself.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── LICENSE FOOTER ─────────────────────────────────────────── -->
+      <footer class="license-footer">
+        <strong>License</strong> &middot; Copyright &copy; NewAE Technology Inc., 2015&ndash;2020.
+        ChipWhisperer is a trademark of NewAE Technology Inc. Tutorials derived from this
+        open-source work must be released under the associated open-source license with clear
+        notice of the source. THE SOFTWARE IS PROVIDED &ldquo;AS IS&rdquo;, WITHOUT WARRANTY
+        OF ANY KIND.<br /><br />
+        <strong>DRACO Lab</strong> &middot; University of Central Florida &middot;
+        Design of Resilient Architectures for Computing
+      </footer>
+
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>
+
